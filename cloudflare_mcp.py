@@ -5,11 +5,28 @@ Cloudflare MCP Server - DNS and Zone Management for Claude Code.
 Provides tools to manage Cloudflare DNS records and zones via the Cloudflare API.
 Enables Claude Code to automate DNS configuration for domains.
 
-Authentication: Set CLOUDFLARE_API_TOKEN environment variable with a token that has
-Zone:Read and DNS:Edit permissions.
+Requirements:
+    - Cloudflare API token with Zone:Read and DNS:Edit permissions
+    - OpenBao agent for secure credential management (production)
+
+Credential Resolution Order:
+    1. OpenBao Agent at http://127.0.0.1:18200
+       Pattern: secret/{client}/{environment}-mcp-cloudflare-{username}
+       Example: secret/client0/prod-mcp-cloudflare-samuelrodda
+    2. CLOUDFLARE_API_TOKEN environment variable (dev-only when OPENBAO_DEV_MODE=1)
+
+Environment variables:
+    ARC_CLIENT: (Optional) Arc Forge namespace, defaults to 'client0'
+    ARC_ENVIRONMENT: (Optional) Environment prefix, defaults to 'prod'
+    ARC_USERNAME: (Optional) Username for user-scoped secrets, defaults to 'samuelrodda'
+    OPENBAO_DEV_MODE: (Optional) Set to '1' to enable env var fallback for development
+    CLOUDFLARE_API_TOKEN: (Dev fallback only) Cloudflare API token
+    OPENBAO_AGENT_ADDR: (Optional) Agent address, defaults to http://127.0.0.1:18200
+    OPENBAO_AGENT_TIMEOUT: (Optional) Agent timeout in seconds, defaults to 5.0
 """
 
 import os
+import sys
 import json
 from typing import Optional, List, Literal
 from enum import Enum
@@ -18,6 +35,16 @@ import httpx
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from mcp.server.fastmcp import FastMCP
 
+# OpenBao Agent Configuration
+AGENT_ADDR = os.getenv("OPENBAO_AGENT_ADDR", "http://127.0.0.1:18200")
+AGENT_TIMEOUT = float(os.getenv("OPENBAO_AGENT_TIMEOUT", "5.0"))
+DEV_MODE = os.getenv("OPENBAO_DEV_MODE", "").lower() in ("1", "true", "yes")
+
+# Arc Forge secret path configuration
+ARC_CLIENT = os.getenv("ARC_CLIENT", "client0")
+ARC_ENVIRONMENT = os.getenv("ARC_ENVIRONMENT", "prod")
+ARC_USERNAME = os.getenv("ARC_USERNAME", "samuelrodda")
+
 # Initialize MCP server
 mcp = FastMCP("cloudflare_mcp")
 
@@ -25,6 +52,91 @@ mcp = FastMCP("cloudflare_mcp")
 API_BASE_URL = "https://api.cloudflare.com/client/v4"
 CHARACTER_LIMIT = 25000
 DEFAULT_PER_PAGE = 50
+
+
+# =============================================================================
+# OpenBao Integration
+# =============================================================================
+
+
+class OpenBaoError(Exception):
+    """Base exception for OpenBao errors."""
+    pass
+
+
+class AgentNotRunningError(OpenBaoError):
+    """Raised when the OpenBao Agent is not running."""
+    pass
+
+
+class SecretNotFoundError(OpenBaoError):
+    """Raised when a secret path doesn't exist."""
+    pass
+
+
+def _get_openbao_client():
+    """Get HTTP client for OpenBao agent communication."""
+    return httpx.Client(
+        base_url=AGENT_ADDR,
+        timeout=AGENT_TIMEOUT,
+        headers={"X-Vault-Request": "true"}
+    )
+
+
+def _get_secret_from_agent(path: str) -> dict:
+    """
+    Read a secret from the OpenBao Agent.
+
+    Args:
+        path: Secret path (e.g., "client0/prod-mcp-cloudflare-samuelrodda")
+
+    Returns:
+        The secret data dict.
+
+    Raises:
+        AgentNotRunningError: If agent is not running
+        SecretNotFoundError: If secret path doesn't exist
+        OpenBaoError: For other OpenBao errors
+    """
+    path = path.lstrip("/")
+    full_path = f"/v1/secret/data/{path}"
+
+    try:
+        with _get_openbao_client() as client:
+            response = client.get(full_path)
+
+            if response.status_code == 404:
+                raise SecretNotFoundError(f"Secret not found: {path}")
+
+            if response.status_code != 200:
+                raise OpenBaoError(
+                    f"Failed to read secret: {response.status_code} - {response.text}"
+                )
+
+            data = response.json()
+            return data.get("data", {}).get("data", {})
+
+    except httpx.ConnectError:
+        raise AgentNotRunningError(
+            f"Cannot connect to OpenBao Agent at {AGENT_ADDR}. "
+            "Start the agent with:\n"
+            "  export BW_SESSION=$(bw unlock --raw)\n"
+            "  start-openbao-mcp"
+        )
+
+
+def _build_cloudflare_secret_path() -> str:
+    """
+    Build secret path for Cloudflare using Arc Forge pattern.
+
+    Pattern: {client}/{environment}-mcp-cloudflare-{username}
+
+    Cloudflare is user-scoped for personal Cloudflare account access.
+
+    Returns:
+        Secret path string (e.g., "client0/prod-mcp-cloudflare-samuelrodda")
+    """
+    return f"{ARC_CLIENT}/{ARC_ENVIRONMENT}-mcp-cloudflare-{ARC_USERNAME}"
 
 
 # Enums
@@ -193,15 +305,57 @@ class DeleteDNSRecordInput(BaseModel):
 
 # Shared utilities
 def _get_api_token() -> str:
-    """Get Cloudflare API token from environment."""
-    token = os.environ.get("CLOUDFLARE_API_TOKEN")
-    if not token:
+    """
+    Get Cloudflare API token from OpenBao agent with dev fallback.
+
+    Uses Arc Forge secret path pattern:
+    secret/{client}/{environment}-mcp-cloudflare-{username}
+
+    Credential Resolution Order:
+    1. OpenBao Agent at http://127.0.0.1:18200 (if running)
+    2. CLOUDFLARE_API_TOKEN environment variable (dev-only fallback when OPENBAO_DEV_MODE=1)
+
+    Returns:
+        API token string.
+
+    Raises:
+        ValueError: If API token cannot be retrieved.
+    """
+    # Build the secret path using Arc Forge pattern
+    secret_path = _build_cloudflare_secret_path()
+
+    try:
+        secret_data = _get_secret_from_agent(secret_path)
+        api_token = secret_data.get("api_token")
+        if not api_token:
+            raise SecretNotFoundError(f"'api_token' key not found in {secret_path} secret")
+        return api_token
+
+    except OpenBaoError as e:
+        # Catch all OpenBao errors (agent not running, secret not found, permission denied, etc.)
+        # Dev-only fallback to environment variable
+        if DEV_MODE:
+            api_token = os.getenv("CLOUDFLARE_API_TOKEN")
+            if api_token:
+                print(
+                    f"[DEV MODE] Using CLOUDFLARE_API_TOKEN env var (agent error: {type(e).__name__}). "
+                    "This fallback is disabled in production.",
+                    file=sys.stderr
+                )
+                return api_token
+
+        # Production or no fallback available
         raise ValueError(
-            "CLOUDFLARE_API_TOKEN environment variable not set. "
-            "Create an API token at https://dash.cloudflare.com/profile/api-tokens "
-            "with Zone:Read and DNS:Edit permissions."
+            f"Failed to retrieve Cloudflare API token from agent: {e}\n"
+            f"Expected path: secret/{secret_path}\n\n"
+            f"To create this secret, connect to your OpenBao server and run:\n"
+            f"  bao kv put secret/{secret_path} api_token=\"your-cloudflare-token\"\n\n"
+            f"Create API token at: https://dash.cloudflare.com/profile/api-tokens\n"
+            f"Required permissions: Zone:Read and DNS:Edit\n\n"
+            f"Or for development, enable dev mode:\n"
+            f"  export OPENBAO_DEV_MODE=1\n"
+            f"  export CLOUDFLARE_API_TOKEN=your-token"
         )
-    return token
 
 
 def _get_headers() -> dict:
