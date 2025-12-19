@@ -388,6 +388,11 @@ async def _make_request(
 
 def _handle_error(e: Exception) -> str:
     """Format error messages for tool responses."""
+    # Check for credential/OpenBao errors first (before generic errors)
+    if isinstance(e, ValueError) and ("openbao" in str(e).lower() or "token" in str(e).lower() or "agent" in str(e).lower()):
+        # Pass through the detailed ValueError from _get_api_token()
+        return f"Error: {str(e)}"
+
     if isinstance(e, httpx.HTTPStatusError):
         try:
             error_data = e.response.json()
