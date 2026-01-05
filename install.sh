@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Cloudflare MCP Server - Claude Code Installation Script
-# Reads from config.json and registers the MCP server with Claude Code
 
 set -euo pipefail
 
@@ -16,6 +15,9 @@ NC='\033[0m'
 info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+# Check for jq
+command -v jq >/dev/null 2>&1 || error "jq is required. Install with: sudo apt install jq"
 
 # Check for config.json
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -33,14 +35,13 @@ fi
 
 # Parse config.json
 CLOUDFLARE_TOKEN=$(jq -r '.cloudflare_api_token // ""' "$CONFIG_FILE")
-OPENBAO_ENABLED=$(jq -r '.openbao_enabled // false' "$CONFIG_FILE")
 
 # Validate
-if [[ "$OPENBAO_ENABLED" != "true" && -z "$CLOUDFLARE_TOKEN" ]]; then
-    error "cloudflare_api_token required when openbao_enabled is false"
+if [[ -z "$CLOUDFLARE_TOKEN" ]]; then
+    error "cloudflare_api_token not configured in config.json"
 fi
 
-# Check for Python venv
+# Create Python venv if needed
 if [[ ! -d "${SCRIPT_DIR}/.venv" ]]; then
     info "Creating Python virtual environment..."
     python3 -m venv "${SCRIPT_DIR}/.venv"
@@ -48,20 +49,14 @@ if [[ ! -d "${SCRIPT_DIR}/.venv" ]]; then
     "${SCRIPT_DIR}/.venv/bin/pip" install -q -r "${SCRIPT_DIR}/requirements.txt"
 fi
 
-# Build claude mcp add command
+# Register with Claude Code
 MCP_NAME="cloudflare"
 PYTHON_PATH="${SCRIPT_DIR}/.venv/bin/python"
 
-if [[ "$OPENBAO_ENABLED" == "true" ]]; then
-    info "Registering with OpenBao credential management..."
-    claude mcp add "$MCP_NAME" -s user -- "$PYTHON_PATH" "${SCRIPT_DIR}/cloudflare_mcp.py"
-else
-    info "Registering with environment variable credentials..."
-    claude mcp add "$MCP_NAME" -s user \
-        --env "CLOUDFLARE_API_TOKEN=${CLOUDFLARE_TOKEN}" \
-        --env "OPENBAO_DEV_MODE=1" \
-        -- "$PYTHON_PATH" "${SCRIPT_DIR}/cloudflare_mcp.py"
-fi
+info "Registering MCP server with Claude Code..."
+claude mcp add "$MCP_NAME" -s user \
+    --env "CLOUDFLARE_API_TOKEN=${CLOUDFLARE_TOKEN}" \
+    -- "$PYTHON_PATH" "${SCRIPT_DIR}/cloudflare_mcp.py"
 
 info "Cloudflare MCP server registered successfully!"
 info "Restart Claude Code to use the new server."
