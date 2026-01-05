@@ -1,0 +1,7 @@
+{
+  "cloudflare_api_token": "",
+  "openbao_enabled": false,
+  "openbao_agent_addr": "http://127.0.0.1:18200",
+  "arc_client": "client0",
+  "arc_environment": "prod"
+}
