@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cloudflare-mcp"
+version = "1.0.0"
+description = "Cloudflare DNS zone and record management MCP server"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "httpx>=0.25.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+cloudflare-mcp = "cloudflare_mcp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+include = ["cloudflare_mcp.py"]

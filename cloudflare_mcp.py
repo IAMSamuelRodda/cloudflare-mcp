@@ -7,22 +7,14 @@ Enables Claude Code to automate DNS configuration for domains.
 
 Requirements:
     - Cloudflare API token with Zone:Read and DNS:Edit permissions
-    - OpenBao agent for secure credential management (production)
 
-Credential Resolution Order:
-    1. OpenBao Agent at http://127.0.0.1:18200
-       Pattern: secret/{client}/{environment}-mcp-cloudflare-{username}
-       Example: secret/client0/prod-mcp-cloudflare-samuelrodda
-    2. CLOUDFLARE_API_TOKEN environment variable (dev-only when OPENBAO_DEV_MODE=1)
+Credential Resolution (in order):
+    1. OpenBao Agent (if available at http://127.0.0.1:18200)
+    2. CLOUDFLARE_API_TOKEN environment variable
 
 Environment variables:
-    ARC_CLIENT: (Optional) Arc Forge namespace, defaults to 'client0'
-    ARC_ENVIRONMENT: (Optional) Environment prefix, defaults to 'prod'
-    ARC_USERNAME: (Optional) Username for user-scoped secrets, defaults to 'samuelrodda'
-    OPENBAO_DEV_MODE: (Optional) Set to '1' to enable env var fallback for development
-    CLOUDFLARE_API_TOKEN: (Dev fallback only) Cloudflare API token
+    CLOUDFLARE_API_TOKEN: API token from Cloudflare dashboard
     OPENBAO_AGENT_ADDR: (Optional) Agent address, defaults to http://127.0.0.1:18200
-    OPENBAO_AGENT_TIMEOUT: (Optional) Agent timeout in seconds, defaults to 5.0
 """
 
 import os
@@ -304,16 +296,23 @@ class DeleteDNSRecordInput(BaseModel):
 
 
 # Shared utilities
+def _is_openbao_agent_available() -> bool:
+    """Check if OpenBao agent is reachable."""
+    try:
+        with _get_openbao_client() as client:
+            response = client.get("/v1/sys/health")
+            return response.status_code in (200, 429, 472, 473, 501, 503)
+    except Exception:
+        return False
+
+
 def _get_api_token() -> str:
     """
-    Get Cloudflare API token from OpenBao agent with dev fallback.
+    Get Cloudflare API token from OpenBao agent or environment variable.
 
-    Uses Arc Forge secret path pattern:
-    secret/{client}/{environment}-mcp-cloudflare-{username}
-
-    Credential Resolution Order:
-    1. OpenBao Agent at http://127.0.0.1:18200 (if running)
-    2. CLOUDFLARE_API_TOKEN environment variable (dev-only fallback when OPENBAO_DEV_MODE=1)
+    Credential Resolution (in order):
+    1. OpenBao Agent (if available)
+    2. CLOUDFLARE_API_TOKEN environment variable
 
     Returns:
         API token string.
@@ -321,41 +320,29 @@ def _get_api_token() -> str:
     Raises:
         ValueError: If API token cannot be retrieved.
     """
-    # Build the secret path using Arc Forge pattern
-    secret_path = _build_cloudflare_secret_path()
+    # Try OpenBao first if agent is available
+    if _is_openbao_agent_available():
+        try:
+            secret_path = _build_cloudflare_secret_path()
+            secret_data = _get_secret_from_agent(secret_path)
+            api_token = secret_data.get("api_token")
 
-    try:
-        secret_data = _get_secret_from_agent(secret_path)
-        api_token = secret_data.get("api_token")
-        if not api_token:
-            raise SecretNotFoundError(f"'api_token' key not found in {secret_path} secret")
+            if api_token:
+                return api_token
+        except OpenBaoError:
+            pass  # Fall through to env var
+
+    # Fallback to environment variable
+    api_token = os.getenv("CLOUDFLARE_API_TOKEN")
+    if api_token:
         return api_token
 
-    except OpenBaoError as e:
-        # Catch all OpenBao errors (agent not running, secret not found, permission denied, etc.)
-        # Dev-only fallback to environment variable
-        if DEV_MODE:
-            api_token = os.getenv("CLOUDFLARE_API_TOKEN")
-            if api_token:
-                print(
-                    f"[DEV MODE] Using CLOUDFLARE_API_TOKEN env var (agent error: {type(e).__name__}). "
-                    "This fallback is disabled in production.",
-                    file=sys.stderr
-                )
-                return api_token
-
-        # Production or no fallback available
-        raise ValueError(
-            f"Failed to retrieve Cloudflare API token from agent: {e}\n"
-            f"Expected path: secret/{secret_path}\n\n"
-            f"To create this secret, connect to your OpenBao server and run:\n"
-            f"  bao kv put secret/{secret_path} api_token=\"your-cloudflare-token\"\n\n"
-            f"Create API token at: https://dash.cloudflare.com/profile/api-tokens\n"
-            f"Required permissions: Zone:Read and DNS:Edit\n\n"
-            f"Or for development, enable dev mode:\n"
-            f"  export OPENBAO_DEV_MODE=1\n"
-            f"  export CLOUDFLARE_API_TOKEN=your-token"
-        )
+    raise ValueError(
+        "Cloudflare API token not found.\n"
+        "Set CLOUDFLARE_API_TOKEN environment variable.\n\n"
+        "Create API token at: https://dash.cloudflare.com/profile/api-tokens\n"
+        "Required permissions: Zone:Read and DNS:Edit"
+    )
 
 
 def _get_headers() -> dict:
@@ -787,5 +774,10 @@ async def cloudflare_delete_dns_record(params: DeleteDNSRecordInput) -> str:
         return _handle_error(e)
 
 
-if __name__ == "__main__":
+def main():
+    """Entry point for cloudflare-mcp command."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

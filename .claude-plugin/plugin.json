@@ -1,0 +1,22 @@
+{
+  "name": "cloudflare-mcp",
+  "version": "1.0.0",
+  "description": "Cloudflare DNS zone and record management MCP server",
+  "author": {
+    "name": "Samuel Rodda",
+    "email": "samuel@arcforge.au"
+  },
+  "homepage": "https://github.com/IAMSamuelRodda/cloudflare-mcp",
+  "repository": "https://github.com/IAMSamuelRodda/cloudflare-mcp",
+  "license": "MIT",
+  "keywords": ["cloudflare", "dns", "mcp", "infrastructure", "devops"],
+  "mcpServers": {
+    "cloudflare": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/IAMSamuelRodda/cloudflare-mcp", "cloudflare-mcp"],
+      "env": {
+        "CLOUDFLARE_API_TOKEN": "${CLOUDFLARE_API_TOKEN}"
+      }
+    }
+  }
+}
