@@ -1,6 +1,6 @@
 # Cloudflare MCP Server
 
-MCP (Model Context Protocol) server for managing Cloudflare DNS records and zones via Claude Code.
+MCP server for Cloudflare DNS management. Provides 6 tools for zones and DNS records.
 
 ## Features
 
@@ -10,45 +10,36 @@ MCP (Model Context Protocol) server for managing Cloudflare DNS records and zone
 - **Update DNS Records** - Modify existing records (content, TTL, proxy status)
 - **Delete DNS Records** - Remove records (with confirmation)
 
-## Quick Install (Claude Code)
+## Installation
 
-```bash
-# Clone the repository
-git clone https://github.com/IAMSamuelRodda/cloudflare-mcp.git
-cd cloudflare-mcp
+### Option 1: uvx (Recommended)
 
-# Create config from example
-cp config.json.example config.json
+Zero-install method using [uv](https://docs.astral.sh/uv/). Add to `~/.claude.json`:
 
-# Edit config.json with your Cloudflare API token
-# Then run the install script
-./install.sh
+```json
+{
+  "mcpServers": {
+    "cloudflare": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/IAMSamuelRodda/cloudflare-mcp", "cloudflare-mcp"],
+      "env": {
+        "CLOUDFLARE_API_TOKEN": "your-api-token"
+      }
+    }
+  }
+}
 ```
 
-The install script will:
-1. Create a Python virtual environment
-2. Install dependencies
-3. Register the MCP server with Claude Code
-
-## Manual Installation
-
-### 1. Get Your Cloudflare API Token
-
-1. Go to https://dash.cloudflare.com/profile/api-tokens
-2. Create a new token with permissions:
-   - **Zone** → Zone → Read
-   - **Zone** → DNS → Edit
-3. Copy your token
-
-### 2. Install Dependencies
+### Option 2: Local Clone
 
 ```bash
+mkdir -p ~/.claude/mcp-servers
+git clone https://github.com/IAMSamuelRodda/cloudflare-mcp.git ~/.claude/mcp-servers/cloudflare-mcp
+cd ~/.claude/mcp-servers/cloudflare-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
-
-### 3. Configure Claude Code
 
 Add to `~/.claude.json`:
 
@@ -56,14 +47,39 @@ Add to `~/.claude.json`:
 {
   "mcpServers": {
     "cloudflare": {
-      "command": "/path/to/cloudflare-mcp/.venv/bin/python",
-      "args": ["/path/to/cloudflare-mcp/cloudflare_mcp.py"],
+      "command": "~/.claude/mcp-servers/cloudflare-mcp/.venv/bin/python",
+      "args": ["~/.claude/mcp-servers/cloudflare-mcp/cloudflare_mcp.py"],
       "env": {
-        "CLOUDFLARE_API_TOKEN": "your-token-here"
+        "CLOUDFLARE_API_TOKEN": "your-api-token"
       }
     }
   }
 }
+```
+
+### Get Your API Token
+
+1. Go to https://dash.cloudflare.com/profile/api-tokens
+2. Create a new token with permissions:
+   - **Zone** → Zone → Read
+   - **Zone** → DNS → Edit
+3. Copy your token
+
+## Updating
+
+### uvx users
+
+```bash
+uv cache clean cloudflare-mcp
+```
+
+### Local clone users
+
+```bash
+cd ~/.claude/mcp-servers/cloudflare-mcp
+git pull
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ## Available Tools
